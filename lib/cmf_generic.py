@@ -1,6 +1,12 @@
 """
-cmf_generic.py
+cmf_generic.py  (experimental_direct_companion)
 ==============
+*** WARNING: NOT Ramanujan Dreams CMF trajectory semantics. ***
+This module implements the DIRECT companion product P <- P*M(n).
+It is RETIRED from the production verification path; the corrected
+reference is lib/cmf_walk_corrected.py (theta companion + I+C/a axis
+operators + unit-step trajectory decomposition).
+
 Dimension-generic CMF machinery for hypergeometric pF(p-1) companion fields.
 Generalizes enrich.py (hard-coded 6F5, DIM=6) to arbitrary order `dim = p`:
 

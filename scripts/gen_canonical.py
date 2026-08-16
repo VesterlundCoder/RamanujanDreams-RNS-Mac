@@ -31,18 +31,24 @@ import numpy as np
 
 K_F, K_G = 6, 5
 NSHIFT = 11
-DMIN, DMAX = -20, 20
-NV = DMAX - DMIN + 1  # 41
 
-NF = math.comb(NV + K_F - 1, K_F)  # 9,366,819
-NG = math.comb(NV + K_G - 1, K_G)  # 1,221,759
+# Direction range. In CORRECTED Dreams semantics the start point from
+# shift=[1]*11 is v0=(2,...,2;3,...,3): any NEGATIVE direction component
+# drives x_i (or y_j) into the pole lattice within ~2 trajectory steps,
+# so the deep fixed-start census uses non-negative directions.
+DMIN_DEFAULT, DMAX_DEFAULT = 0, 20
 
-AF = 6000011  # multiplier for the bijective slot shuffle
 BF = 1234567
 
 
-def _check_bijection():
-    assert math.gcd(AF, NF) == 1, "AF must be coprime to NF"
+def space_params(dmin: int, dmax: int):
+    nv = dmax - dmin + 1
+    nf = math.comb(nv + K_F - 1, K_F)
+    ng = math.comb(nv + K_G - 1, K_G)
+    af = 6000011
+    while math.gcd(af, nf) != 1:
+        af += 2
+    return nv, nf, ng, af
 
 
 def unrank_cwr(idx: int, k: int, v: int) -> list[int]:
@@ -63,22 +69,23 @@ def unrank_cwr(idx: int, k: int, v: int) -> list[int]:
     return out
 
 
-def build_g_table() -> np.ndarray:
+def build_g_table(nv: int, dmin: int) -> np.ndarray:
     """All Ng g-multisets in lex order, as int32 dir values."""
     g = np.array(
-        list(itertools.combinations_with_replacement(range(NV), K_G)),
+        list(itertools.combinations_with_replacement(range(nv), K_G)),
         dtype=np.int32,
     )
-    return g + DMIN
+    return g + dmin
 
 
-def load_manifest(outdir: str) -> dict:
+def load_manifest(outdir: str, dmin: int, dmax: int) -> dict:
     p = os.path.join(outdir, "manifest.json")
     if os.path.exists(p):
         with open(p) as f:
             return json.load(f)
-    return {"next_slot": 0, "Af": AF, "Bf": BF, "Nf": NF, "Ng": NG,
-            "chunks": []}
+    nv, nf, ng, af = space_params(dmin, dmax)
+    return {"next_slot": 0, "Af": af, "Bf": BF, "Nf": nf, "Ng": ng,
+            "dmin": dmin, "dmax": dmax, "chunks": []}
 
 
 def save_manifest(outdir: str, man: dict):
@@ -96,13 +103,20 @@ def main():
                     help="approximate trajectories per chunk")
     ap.add_argument("--chunk-id", type=int, default=None,
                     help="override chunk id (default: len(manifest.chunks))")
+    ap.add_argument("--dmin", type=int, default=DMIN_DEFAULT)
+    ap.add_argument("--dmax", type=int, default=DMAX_DEFAULT)
     args = ap.parse_args()
 
-    _check_bijection()
     os.makedirs(args.outdir, exist_ok=True)
-    man = load_manifest(args.outdir)
+    man = load_manifest(args.outdir, args.dmin, args.dmax)
+    if man.get("dmin", args.dmin) != args.dmin or \
+            man.get("dmax", args.dmax) != args.dmax:
+        raise SystemExit("manifest was generated with a different dir range")
+    NV, NF, NG, AF = space_params(man.get("dmin", args.dmin),
+                                  man.get("dmax", args.dmax))
     if man["Af"] != AF or man["Nf"] != NF:
         raise SystemExit("manifest was generated with different parameters")
+    DMIN = man.get("dmin", args.dmin)
 
     n_slots = max(1, round(args.count / NG))
     slot0 = man["next_slot"]
@@ -114,7 +128,7 @@ def main():
     chunk_id = args.chunk_id if args.chunk_id is not None else len(man["chunks"])
     out_path = os.path.join(args.outdir, f"traj_chunk_{chunk_id:05d}.bin")
 
-    g_table = build_g_table()  # (NG, 5)
+    g_table = build_g_table(NV, DMIN)  # (NG, 5)
     shift = np.ones((NG, NSHIFT), dtype=np.int32)
 
     total = 0

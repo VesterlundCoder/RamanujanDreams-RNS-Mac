@@ -23,7 +23,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 PY = sys.executable
-BIN = os.path.join(ROOT, "build", "dreams_rns_df64")
+BIN = os.path.join(ROOT, "build", "dreams_rns_cmf_df64")
 
 
 def run(cmd, **kw):
@@ -92,11 +92,11 @@ def main():
                     help="stop starting new chunks after this many hours")
     ap.add_argument("--chunk-size", type=int, default=100_000_000)
     ap.add_argument("--z-num", type=int, default=1)
-    ap.add_argument("--z-den", type=int, default=1)
+    ap.add_argument("--z-den", type=int, default=2)
     ap.add_argument("--nsteps", type=int, default=1000)
     ap.add_argument("--match-workers", type=int, default=14)
     ap.add_argument("--pslq-workers", type=int, default=8)
-    ap.add_argument("--tol", type=float, default=1e-11)
+    ap.add_argument("--tol", type=float, default=1e-9)
     ap.add_argument("--delete-traj", action="store_true",
                     help="delete trajectory bin after matching (regenerable)")
     ap.add_argument("--delete-matrices", action="store_true",
@@ -104,6 +104,16 @@ def main():
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
+
+    # MANDATORY parity gate: never start a campaign on unverified semantics
+    print("[PARITY] running mandatory CMF golden tests...", flush=True)
+    gate = subprocess.run([PY, os.path.join(HERE, "validate_cmf_df64.py")],
+                          cwd=ROOT)
+    if gate.returncode != 0:
+        print("FATAL: CMF parity failure. Campaign aborted.", flush=True)
+        sys.exit(1)
+    print("[PARITY] CMF SEMANTICS VERIFIED", flush=True)
+
     bg = []  # (proc, stage, chunk_id, cleanup_paths)
 
     def reap(block=False):

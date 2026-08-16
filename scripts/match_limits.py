@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""CPU pipeline: match DF64MAT1 matrix limits against the constant library.
+"""CPU pipeline: match DF64CMF2 matrix limits against the constant library.
 
-For every trajectory the stored 6x6 product matrix at N=1000 is rank-1
-to ~14 digits when the walk converges. The limit candidates are the 30
-ordered last-column ratios v[i]/v[j]. Convergence is certified from the
-SAME matrix by cross-checking against column 4 (rank-1 test):
-    conv = |r_col5 - r_col4| / |r_col5|
-Only converged ratios (conv < conv-tol) are matched against the
-~3.4M-entry float64 limit library (limit_library.py from the census
-pipeline). Rational matches are dropped. Hits go to hits.jsonl for the
-PSLQ stage.
+CORRECTED-semantics edition: reads the DF64CMF2 format produced by
+dreams_rns_cmf_df64 (theta-companion CMF axis walk). Rank-aware
+(rank 5 at z=1, else 6) and status-aware: only status==OK trajectories
+enter the float64 screen; flagged trajectories (singular / needs
+regularization) are written to a separate fallback queue for the exact
+CPU engine.
+
+The limit candidates are the rank*(rank-1) ordered last-column ratios
+v[i]/v[j] (last = rank-1). Convergence is certified from the SAME matrix
+by cross-checking against column rank-2 (rank-1 matrix test). Converged
+ratios are matched against the constant library; rational limits are
+rejected via continued fractions. Hits go to hits.jsonl for PSLQ.
 
 Multiprocessing over record ranges; each worker mmaps the files.
 """
@@ -31,16 +34,14 @@ CENSUS = "/Users/davidvesterlund/freedomcode/freedomcode/stringtheory/6F5Sweeps/
 sys.path.insert(0, LIB if os.path.isdir(LIB) else CENSUS)
 from limit_library import build_library, is_rational_name  # noqa: E402
 
-DIM = 6
+MAX_DIM = 6
 E = 36
 NSHIFT = 11
-HDR = 8 + 12 + 8 + 8
-REC = E * 8 + 4  # 292 bytes
+HDR = 8 + 16 + 8 + 8
+REC = E * 8 + 4 + 4  # 296 bytes
 
-REC_DT = np.dtype([("mat", "<f4", (E, 2)), ("exp", "<i4")])
+REC_DT = np.dtype([("mat", "<f4", (E, 2)), ("exp", "<i4"), ("status", "<u4")])
 TRAJ_DT = np.dtype([("shift", "<i4", (NSHIFT,)), ("dir", "<i4", (NSHIFT,))])
-
-PAIRS = [(i, j) for i in range(DIM) for j in range(DIM) if i != j]  # 30
 
 _G = {}
 
@@ -48,22 +49,52 @@ _G = {}
 def read_header(path):
     with open(path, "rb") as f:
         magic = f.read(8)
-        assert magic == b"DF64MAT1", magic
-        dim, nshift, nsteps = struct.unpack("<III", f.read(12))
+        assert magic == b"DF64CMF2", ("not a corrected-semantics DF64CMF2 "
+                                      f"file (magic={magic!r})")
+        max_dim, rank, nshift, nsteps = struct.unpack("<IIII", f.read(16))
         z_num, z_den = struct.unpack("<ii", f.read(8))
         (ntraj,) = struct.unpack("<Q", f.read(8))
-    assert dim == DIM and nshift == NSHIFT
-    return nsteps, z_num, z_den, ntraj
+    assert max_dim == MAX_DIM and nshift == NSHIFT
+    assert rank in (5, 6)
+    return rank, nsteps, z_num, z_den, ntraj
 
 
-def init_worker(mat_path, traj_path, tol, conv_tol):
+def rational_mask(vals):
+    """True for library entries that are rational or near-rational traps.
+
+    Two classes are excluded from matching:
+      1. exactly rational values (q<=5000 at 1e-12): composite names like
+         '-1/12*-3/20' are rational; noisy rational limits flood them.
+      2. entries within 1e-5 of a SMALL rational (q<=50): e.g.
+         zeta(20)+7 = 8.00000095... is a trap for rational limits with
+         ~1e-7 df64 walk drift.
+    """
+    mask = np.zeros(len(vals), dtype=bool)
+    for k, v in enumerate(vals):
+        if not np.isfinite(v) or v == 0:
+            mask[k] = True
+            continue
+        fr = Fraction(float(v)).limit_denominator(5000)
+        if fr.denominator and abs(v - float(fr)) <= 1e-12 * abs(v):
+            mask[k] = True
+            continue
+        fr = Fraction(float(v)).limit_denominator(50)
+        if fr.denominator and abs(v - float(fr)) <= 1e-5 * abs(v):
+            mask[k] = True
+    return mask
+
+
+def init_worker(mat_path, traj_path, tol, conv_tol, rank):
     vals, names = build_library()
     _G["vals"] = vals
     _G["names"] = names
+    _G["lib_rat"] = rational_mask(vals)
     _G["mat"] = np.memmap(mat_path, dtype=REC_DT, mode="r", offset=HDR)
     _G["traj"] = np.memmap(traj_path, dtype=TRAJ_DT, mode="r")
     _G["tol"] = tol
     _G["conv_tol"] = conv_tol
+    _G["rank"] = rank
+    _G["pairs"] = [(i, j) for i in range(rank) for j in range(rank) if i != j]
 
 
 def process_range(rng):
@@ -71,17 +102,25 @@ def process_range(rng):
     mat = _G["mat"][lo:hi]
     vals, names = _G["vals"], _G["names"]
     tol, conv_tol = _G["tol"], _G["conv_tol"]
+    rank = _G["rank"]
+    pairs = _G["pairs"]
+
+    status = mat["status"]
+    ok_mask = status == 0
+    n_flagged = int((~ok_mask).sum())
+    flagged_ids = (lo + np.nonzero(~ok_mask)[0]).tolist()
 
     m = (mat["mat"][:, :, 0].astype(np.float64) +
-         mat["mat"][:, :, 1].astype(np.float64)).reshape(-1, DIM, DIM)
+         mat["mat"][:, :, 1].astype(np.float64)).reshape(-1, MAX_DIM, MAX_DIM)
+    m[~ok_mask] = np.nan  # exclude flagged trajectories from the screen
 
     hits = []
     n_conv = 0
     with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-        v5 = m[:, :, 5]  # last column
-        v4 = m[:, :, 4]  # cross-check column
-        ii = np.array([p[0] for p in PAIRS])
-        jj = np.array([p[1] for p in PAIRS])
+        v5 = m[:, :rank, rank - 1]  # last active column
+        v4 = m[:, :rank, rank - 2]  # cross-check column
+        ii = np.array([p[0] for p in pairs])
+        jj = np.array([p[1] for p in pairs])
         r5 = v5[:, ii] / v5[:, jj]          # (B, 30)
         r4 = v4[:, ii] / v4[:, jj]
         conv = np.abs(r5 - r4) / np.maximum(np.abs(r5), 1e-300)
@@ -100,6 +139,8 @@ def process_range(rng):
                 rel = np.abs(r - lib) / np.maximum(np.abs(r), np.abs(lib))
                 sel = rel < tol
                 for t in np.nonzero(sel)[0]:
+                    if _G["lib_rat"][c[t]]:
+                        continue  # rational-valued library entry
                     name = names[c[t]]
                     if is_rational_name(name.lstrip("-")):
                         continue
@@ -120,7 +161,7 @@ def process_range(rng):
                         "shift": _G["traj"][lo + b]["shift"].tolist(),
                         "dir": _G["traj"][lo + b]["dir"].tolist(),
                     })
-    return len(mat), n_conv, hits
+    return len(mat), n_conv, hits, n_flagged, flagged_ids
 
 
 def main():
@@ -134,10 +175,11 @@ def main():
     ap.add_argument("--conv-tol", type=float, default=1e-10)
     args = ap.parse_args()
 
-    nsteps, z_num, z_den, ntraj = read_header(args.matrices_bin)
+    rank, nsteps, z_num, z_den, ntraj = read_header(args.matrices_bin)
     out_path = args.out or args.matrices_bin + ".hits.jsonl"
-    print(f"matching {ntraj:,} trajectories (N={nsteps}, z={z_num}/{z_den}) "
-          f"with {args.workers} workers", flush=True)
+    fb_path = args.matrices_bin + ".fallback.jsonl"
+    print(f"matching {ntraj:,} trajectories (N={nsteps}, z={z_num}/{z_den}, "
+          f"rank={rank}) with {args.workers} workers", flush=True)
 
     # warm library cache before forking
     vals, _ = build_library()
@@ -150,24 +192,38 @@ def main():
     done = 0
     n_conv_tot = 0
     n_hits = 0
-    with open(out_path, "w") as out, Pool(
+    n_flagged_tot = 0
+    traj_mm = np.memmap(args.traj_bin, dtype=TRAJ_DT, mode="r")
+    with open(out_path, "w") as out, open(fb_path, "w") as fb, Pool(
             args.workers, initializer=init_worker,
             initargs=(args.matrices_bin, args.traj_bin,
-                      args.tol, args.conv_tol)) as pool:
-        for nrec, n_conv, hits in pool.imap_unordered(process_range, ranges):
+                      args.tol, args.conv_tol, rank)) as pool:
+        for nrec, n_conv, hits, n_flagged, flagged_ids in \
+                pool.imap_unordered(process_range, ranges):
             done += nrec
             n_conv_tot += n_conv
+            n_flagged_tot += n_flagged
             for h in hits:
                 h["z_num"], h["z_den"], h["N"] = z_num, z_den, nsteps
+                h["rank"] = rank
                 out.write(json.dumps(h) + "\n")
+            for tid in flagged_ids:
+                fb.write(json.dumps({
+                    "traj_id": tid,
+                    "shift": traj_mm[tid]["shift"].tolist(),
+                    "dir": traj_mm[tid]["dir"].tolist(),
+                    "z_num": z_num, "z_den": z_den, "N": nsteps,
+                }) + "\n")
             n_hits += len(hits)
             el = time.time() - t0
             print(f"  {done:,}/{ntraj:,} ({done/el:,.0f} traj/s) "
-                  f"converged-ratios={n_conv_tot:,} hits={n_hits}", flush=True)
+                  f"converged-ratios={n_conv_tot:,} hits={n_hits} "
+                  f"flagged={n_flagged_tot:,}", flush=True)
 
     el = time.time() - t0
     print(f"DONE {ntraj:,} traj in {el:.1f}s = {ntraj/el:,.0f} traj/s; "
-          f"{n_hits} library hits -> {out_path}", flush=True)
+          f"{n_hits} library hits -> {out_path}; "
+          f"{n_flagged_tot:,} flagged -> {fb_path}", flush=True)
 
 
 if __name__ == "__main__":

@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Full PSLQ verification of library hits from match_limits.py.
 
-For every unique (shift, dir, z) hit: exact integer double-depth walk
-(pslq_companion.delta_and_limit, depth 2N) to get the certified delta
-and a high-precision limit, then the full PSLQ battery
-(pslq_companion.pslq_identify) at the requested dps.
+CORRECTED-semantics edition. For every unique limit value:
+  1. re-walk the trajectory with the corrected high-precision CMF walk
+     (lib/cmf_walk_corrected.py, mpmath backend) at depth N and 2N,
+  2. compute L for the SPECIFIC matched (i,j) pair (column rank-1),
+  3. estimate convergence from |L_N - L_2N|,
+  4. cross-check against the GPU float64 match (gate 1e-8),
+  5. run the full PSLQ battery (pslq_companion.pslq_identify) on L_2N.
 
-The float64 library match is also cross-checked against the exact limit
-of the SPECIFIC matched (i,j) ratio.
+NOTE: cmf_generic.py (direct companion product) is NOT Ramanujan Dreams
+CMF trajectory semantics and is no longer used in this production path.
 """
 from __future__ import annotations
 
@@ -23,8 +26,6 @@ LIB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
 PSLQ_PKG = "/Users/davidvesterlund/freedomcode/freedomcode/stringtheory/pslq_run/pslq_batch_package"
 sys.path.insert(0, LIB if os.path.isdir(LIB) else PSLQ_PKG)
 
-DIM = 6
-
 _CFG = {}
 
 
@@ -36,52 +37,66 @@ def init_worker(dps, n_depth, maxcoeff, maxsteps):
 
 def process_hit(rec: dict) -> dict:
     import mpmath as mp
-    import cmf_generic as cg
     import pslq_companion as pc
+    from cmf_walk_corrected import (apply_trajectory_step,
+                                    rank_for_z, start_pos)
 
     shift = rec["shift"]
     dirv = rec["dir"]
     zn, zd = rec["z_num"], rec["z_den"]
     N = _CFG["N"]
+    dps = _CFG["dps"]
 
     try:
-        # exact integer walk to depth 2N
-        P = [[1 if i == j else 0 for j in range(DIM)] for i in range(DIM)]
-        snapN = None
-        for n in range(1, 2 * N + 1):
-            P = cg.matmul_int(P, cg.build_M_int(n, shift, dirv, zn, zd, DIM), DIM)
-            if n == N:
-                snapN = [row[:] for row in P]
-
-        i, j, last = rec["i"], rec["j"], DIM - 1
-        pn, qn = snapN[i][last], snapN[j][last]
-        p2, q2 = P[i][last], P[j][last]
+        mp.mp.dps = dps
+        z = mp.mpf(zn) / mp.mpf(zd)
+        zero, one = mp.mpf(0), mp.mpf(1)
+        rank = rank_for_z(Fraction(zn, zd))
+        i, j, last = rec["i"], rec["j"], rank - 1
         out = dict(rec)
 
-        if qn == 0 or q2 == 0:
+        # corrected high-precision walk, snapshot at N, continue to 2N
+        pos = start_pos(shift)
+        W = [[one if r == c else zero for c in range(rank)]
+             for r in range(rank)]
+        LN = None
+        for n in range(1, 2 * N + 1):
+            apply_trajectory_step(W, pos, dirv, z, rank, zero, one)
+            # renormalize to keep magnitudes sane
+            mx = max(abs(v) for row in W for v in row)
+            if mx > 0:
+                W = [[v / mx for v in row] for row in W]
+            if n == N:
+                if W[j][last] == 0:
+                    out["status"] = "zero_denominator"
+                    return out
+                LN = W[i][last] / W[j][last]
+
+        if W[j][last] == 0:
             out["status"] = "zero_denominator"
             return out
+        L = W[i][last] / W[j][last]
 
-        L = mp.mpf(p2) / mp.mpf(q2)
-        cross = pn * q2 - p2 * qn
-        if cross == 0:
-            # exact rational convergent: identical at both depths
-            fr = Fraction(p2, q2)
-            out["status"] = "exact_rational"
-            out["L_exact"] = f"{fr.numerator}/{fr.denominator}"
-            return out
-
-        log_err = cg.log_bigint(cross) - cg.log_bigint(qn) - cg.log_bigint(q2)
-        log_q = cg.log_bigint(qn)
-        delta = -(1.0 + log_err / log_q) if log_q else None
-        out["delta_exact"] = delta
+        # convergence estimate from the two depths
+        diff = abs(L - LN)
+        out["conv_2N"] = float(mp.nstr(diff, 8)) if diff > 0 else 0.0
         out["L_exact_40d"] = mp.nstr(L, 40)
 
-        # cross-check the float64 match
+        # cross-check the GPU float64 match against the corrected limit
         rel = abs(float(L) - rec["L_float"]) / max(abs(float(L)), 1e-300)
         out["float_vs_exact_rel"] = rel
-        if rel > 1e-9:
+        if rel > 1e-8:
             out["status"] = "float_mismatch"
+            return out
+        if diff > mp.mpf(10) ** (-20):
+            out["status"] = "not_converged"
+            return out
+
+        # reject rational limits (denominator <= 1e6 at high precision)
+        fr = Fraction(float(L)).limit_denominator(1_000_000)
+        if abs(L - mp.mpf(fr.numerator) / fr.denominator) < mp.mpf(10) ** (-30):
+            out["status"] = "rational_limit"
+            out["L_rational"] = f"{fr.numerator}/{fr.denominator}"
             return out
 
         out["pslq"] = pc.pslq_identify(L, maxcoeff=_CFG["maxcoeff"],

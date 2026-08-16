@@ -13,3 +13,8 @@ add_executable(dreams_rns_df64 src/main_df64.mm)
 target_include_directories(dreams_rns_df64 PRIVATE include src)
 target_compile_options(dreams_rns_df64 PRIVATE -fobjc-arc -O2)
 target_link_libraries(dreams_rns_df64 PRIVATE "-framework Foundation" "-framework Metal")
+
+add_executable(dreams_rns_cmf_df64 src/main_cmf_df64.mm)
+target_include_directories(dreams_rns_cmf_df64 PRIVATE include src)
+target_compile_options(dreams_rns_cmf_df64 PRIVATE -fobjc-arc -O2)
+target_link_libraries(dreams_rns_cmf_df64 PRIVATE "-framework Foundation" "-framework Metal")

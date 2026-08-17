@@ -1,0 +1,4 @@
+ramanujantools
+sympy
+mpmath
+numpy

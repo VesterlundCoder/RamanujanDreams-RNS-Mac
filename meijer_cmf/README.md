@@ -15,6 +15,7 @@ hundreds of bits. That drives both kernel designs:
 | `walk_meijer_df64.metal` | screening | df64 (2xfloat32) mantissas + software exponents, exact power-of-two rescaling; ~14-digit limits + log2 growth, no primes |
 | `walk_meijer_rns.metal` | certification | residue number system, one thread = (candidate, prime); bit-exact via Garner CRT on host |
 | `df64_walk.py` | host tooling | validated CPU mirror of the df64 kernel, tensor exporter (`--export`), GPU verifier (`--check-gpu`) |
+| `fast_export.py` | host tooling | ~60-100x faster exporter: builds trajectory matrices with python-flint `fmpz_poly` (numerator-only unit-step product + exact GCD strip of the scalar factor) instead of sympy; `--selftest` proves exact identity with the sympy path |
 | `rns_walk.py` | host tooling | bit-exact CPU RNS mirror (validated against exact sympy walk), rigorous prime-count sizing, drop-2-primes consistency check, exporter |
 | `common.py` | shared | CMF construction, trajectory matrices, PSLQ identification, delta machinery |
 
@@ -46,10 +47,11 @@ kernel at runtime with `MTLMathModeSafe` (exact IEEE fma, required by df64).
 pip install -r meijer_cmf/requirements.txt
 cmake -S . -B build && cmake --build build --target dreams_meijer_df64 -j
 
-# 1. export candidate tensors (sympy trajectory matrices -> Horner tables)
-python meijer_cmf/df64_walk.py --pairs pairs.json --depth 1000 \
-    --checkpoints 500,900,1000 --export export_run
+# 1. export candidate tensors (flint fmpz_poly, ~15 cand/s/core)
+python meijer_cmf/fast_export.py --pairs pairs.json --depth 1000 \
+    --checkpoints 500,900,1000 --export export_run --workers 8
 # pairs.json: [[[a0..b3 initial], [8-dim direction]], ...]
+# (df64_walk.py --export is the slow sympy reference exporter)
 
 # 2. GPU walk
 ./build/dreams_meijer_df64 export_run meijer_cmf/walk_meijer_df64.metal out.bin
@@ -68,8 +70,11 @@ python meijer_cmf/rns_walk.py --validate --depth 200 --checkpoints 100,200
   incl. the baseline `+1680 z2 +1680 z3` pair and the `+432 z3` hit family).
 - CPU mirror == exact sympy walk to ~1e-15 at N=1000.
 - RNS CPU mirror == exact sympy walk bit-for-bit at N=100/200.
-- Throughput: ~3,600 candidates/s at N=1000 (batch 1024, deg1=84).
-  Pipeline bottleneck is the sympy exporter (~1 s/candidate/core).
+- fast_export == sympy trajectory matrix exactly (polynomial
+  cross-multiplication identity, incl. backward-step trajectories), and its
+  GPU results match the sympy-based CPU mirror to ~1e-14 at N=1000.
+- Throughput: GPU walk ~3,600 candidates/s at N=1000 (batch 1024, deg1=84);
+  fast_export ~15 cand/s/core (~65-85 ms/candidate, was ~6-8 s with sympy).
 
 Output record layout (per checkpoint, per candidate):
 `float2 mat[9]`, `int32 expRel[9]`, `int32 growth` --

@@ -118,7 +118,9 @@ def df64_split(coeffs, m, deg1):
                     continue
                 bl = abs(c).bit_length()
                 keep = min(bl, 53)
-                x = math.copysign((abs(c) >> (bl - keep)) / (1 << keep), c)
+                x = (abs(c) >> (bl - keep)) / (1 << keep)
+                if c < 0:
+                    x = -x
                 hi = np.float32(x)
                 lo = np.float32(x - float(hi))
                 mant[i * m + j, d] = (hi, lo)

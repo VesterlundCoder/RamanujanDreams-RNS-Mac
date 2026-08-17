@@ -2,3 +2,4 @@ ramanujantools
 sympy
 mpmath
 numpy
+python-flint

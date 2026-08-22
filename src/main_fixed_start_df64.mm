@@ -127,7 +127,10 @@ int main(int argc, char **argv) {
         NSString *src = [NSString stringWithUTF8String:
             readText("metal/walk_6f5_fixed_start_df64.metal").c_str()];
         MTLCompileOptions *opts = [MTLCompileOptions new];
-        opts.mathMode = MTLMathModeSafe;
+        // Backward-compatible precise mode. On newer SDKs this property is
+        // deprecated in favor of mathMode=MTLMathModeSafe, but fastMathEnabled
+        // is available on the Xcode 15 SDK as well. df64 requires precise FMA.
+        opts.fastMathEnabled = NO;
         id<MTLLibrary> lib = [dev newLibraryWithSource:src options:opts error:&err];
         if (!lib) throw std::runtime_error([[err localizedDescription] UTF8String]);
         id<MTLFunction> fn = [lib newFunctionWithName:@"walk_6f5_fixed_start_df64"];

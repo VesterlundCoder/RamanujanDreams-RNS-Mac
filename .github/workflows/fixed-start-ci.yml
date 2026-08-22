@@ -34,7 +34,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Configure
         run: cmake -S . -B build
-      - name: Build Objective-C++ hosts
-        run: cmake --build build --parallel 4
+      - name: Build fixed-start Objective-C++ host
+        run: cmake --build build --target dreams_fixed_start_df64 --parallel 4
       - name: Compile fixed-start Metal source
         run: xcrun -sdk macosx metal -c metal/walk_6f5_fixed_start_df64.metal -o /tmp/walk_6f5_fixed_start_df64.air

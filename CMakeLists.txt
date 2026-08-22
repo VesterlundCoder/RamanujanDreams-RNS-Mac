@@ -19,6 +19,14 @@ target_include_directories(dreams_rns_cmf_df64 PRIVATE include src)
 target_compile_options(dreams_rns_cmf_df64 PRIVATE -fobjc-arc -O2)
 target_link_libraries(dreams_rns_cmf_df64 PRIVATE "-framework Foundation" "-framework Metal")
 
+# Fixed absolute-start optimizer. Propagates only two selected rows and
+# emits two checkpoints, reducing both compute and I/O for trajectory
+# optimization after a start point's limit has already been identified.
+add_executable(dreams_fixed_start_df64 src/main_fixed_start_df64.mm)
+target_include_directories(dreams_fixed_start_df64 PRIVATE include src)
+target_compile_options(dreams_fixed_start_df64 PRIVATE -fobjc-arc -O2)
+target_link_libraries(dreams_fixed_start_df64 PRIVATE "-framework Foundation" "-framework Metal")
+
 add_executable(dreams_meijer_df64 src/main_meijer_df64.mm)
 target_include_directories(dreams_meijer_df64 PRIVATE include src)
 target_compile_options(dreams_meijer_df64 PRIVATE -fobjc-arc -O2)

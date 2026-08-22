@@ -1,0 +1,40 @@
+name: fixed-start-ci
+
+on:
+  push:
+    branches: [fixed-start-architecture]
+  pull_request:
+    branches: [main]
+
+jobs:
+  cpu-semantics:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install numpy mpmath sympy
+      - name: Syntax check fixed-start Python
+        run: |
+          python -m py_compile lib/cmf_walk_absolute.py
+          python -m py_compile scripts/gen_fixed_directions.py
+          python -m py_compile scripts/identify_fixed_start.py
+          python -m py_compile scripts/refine_fixed_delta.py
+          python -m py_compile scripts/run_fixed_start_campaign.py
+          python -m py_compile scripts/test_fixed_start_cpu.py
+          python -m py_compile scripts/validate_fixed_start.py
+      - name: Exact CPU semantic tests
+        run: python scripts/test_fixed_start_cpu.py
+
+  macos-build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build
+      - name: Build fixed-start Objective-C++ host
+        run: cmake --build build --target dreams_fixed_start_df64 --parallel 4
+      - name: Compile fixed-start Metal source
+        run: xcrun -sdk macosx metal -c metal/walk_6f5_fixed_start_df64.metal -o /tmp/walk_6f5_fixed_start_df64.air

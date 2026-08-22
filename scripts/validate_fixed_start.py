@@ -5,6 +5,7 @@ Checks:
   * N=0 in the exact oracle is the identity product AT the supplied v0
   * N=1 ends at v0+t, proving the first operator was applied from v0
   * projected GPU ratios match exact Fraction arithmetic at small depths
+  * forward and inverse axis operators are covered on regular paths
   * a known axis-pole path is flagged
 
 The campaign runner should only be used after this prints
@@ -27,7 +28,6 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 from cmf_walk_absolute import projected_ratio, walk_projected_absolute  # noqa: E402
 
 BIN = os.path.join(ROOT, "build", "dreams_fixed_start_df64")
-NSHIFT = 11
 HDR = 100
 REC_DT = np.dtype([
     ("vals", "<f4", (4, 2)),
@@ -37,12 +37,17 @@ REC_DT = np.dtype([
 TOL = 2e-8
 
 BASE = [2] * 6 + [3] * 5
+SEPARATED = [2, 4, 6, 8, 10, 12, 15, 17, 19, 21, 23]
+PAIR = (5, 4)
 TESTS = [
-    ("numerator +1", BASE, [1,0,0,0,0,0,0,0,0,0,0], -1, 1, (5,4)),
-    ("denominator +1", BASE, [0,0,0,0,0,0,1,0,0,0,0], -1, 1, (5,4)),
-    ("mixed positive", BASE, [1,0,2,0,0,1,0,1,0,0,1], -1, 1, (5,4)),
-    ("nontrivial absolute start", [1,4,2,5,3,6,4,7,5,8,6],
-     [1,0,1,0,1,0,1,0,1,0,1], 1, 2, (5,4)),
+    ("numerator +1", BASE, [1,0,0,0,0,0,0,0,0,0,0], -1, 1, PAIR),
+    # y+1 is an inverse operator. The separated roots avoid determinant/root
+    # collisions, making this a deliberate regular inverse test.
+    ("denominator +1 inverse", SEPARATED, [0,0,0,0,0,0,1,0,0,0,0], -1, 1, PAIR),
+    # Multiple numerator axes and |dir|=2 exercise level-descending unit-step
+    # decomposition without introducing an accidental inverse singularity.
+    ("mixed forward numerator", SEPARATED, [1,0,2,0,0,1,0,0,0,0,0], -1, 1, PAIR),
+    ("absolute start z=1/2", SEPARATED, [0,1,0,1,0,0,0,0,0,0,0], 1, 2, PAIR),
 ]
 DEPTHS = [1, 2, 3, 5, 10, 20]
 
@@ -86,19 +91,19 @@ def main():
     failures = 0
 
     # Semantic invariant independent of floating point/GPU.
-    d = TESTS[2][2]
+    d = [1] + [0] * 10
     rows0, rank0, st0, pos0, snap0 = walk_projected_absolute(
-        BASE, d, -1, 1, 0, 5, 4, field="fraction", snapshot_depths=(0,)
+        BASE, d, -1, 1, 0, PAIR[0], PAIR[1], field="fraction", snapshot_depths=(0,)
     )
     expected0 = [[0] * rank0 for _ in range(2)]
-    expected0[0][5] = 1
-    expected0[1][4] = 1
+    expected0[0][PAIR[0]] = 1
+    expected0[1][PAIR[1]] = 1
     ok0 = st0 == 0 and pos0 == BASE and rows0 == expected0 and snap0[0] == expected0
     print(f"[FIXED PARITY] N=0 identity at exact v0: {'PASS' if ok0 else 'FAIL'}")
     failures += 0 if ok0 else 1
 
-    rows1, rank1, st1, pos1, _ = walk_projected_absolute(
-        BASE, d, -1, 1, 1, 5, 4, field="fraction"
+    _, _, st1, pos1, _ = walk_projected_absolute(
+        BASE, d, -1, 1, 1, PAIR[0], PAIR[1], field="fraction"
     )
     expected_pos1 = [a + b for a, b in zip(BASE, d)]
     ok1 = st1 == 0 and pos1 == expected_pos1
@@ -107,7 +112,7 @@ def main():
 
     for name, start, direction, zn, zd, pair in TESTS:
         for N in DEPTHS:
-            rows, rank, st, _, snaps = walk_projected_absolute(
+            _, rank, st, _, snaps = walk_projected_absolute(
                 start, direction, zn, zd, N, pair[0], pair[1],
                 field="fraction", snapshot_depths=(max(1, N // 2), N),
             )
@@ -117,8 +122,13 @@ def main():
                       f"status cpu/gpu={st}/{sg} rank={rank}/{rg}")
                 failures += 1
                 continue
-            L0 = float(projected_ratio(snaps[cp0], rank))
-            L1 = float(projected_ratio(snaps[cp1], rank))
+            try:
+                L0 = float(projected_ratio(snaps[cp0], rank))
+                L1 = float(projected_ratio(snaps[cp1], rank))
+            except ZeroDivisionError:
+                print(f"[FIXED PARITY] {name:28s} N={N:3d} FAIL zero projected denominator")
+                failures += 1
+                continue
             e0 = abs(L0g - L0) / max(abs(L0), 1.0)
             e1 = abs(L1g - L1) / max(abs(L1), 1.0)
             ok = max(e0, e1) < TOL
@@ -129,7 +139,7 @@ def main():
     # BASE x0=2 with direction -1 reaches x0=1 after step 1; the next
     # negative unit step has denominator x0-1=0 and must be rejected.
     singular = [-1] + [0] * 10
-    _, sg, _, _, _, _ = run_gpu(BASE, singular, -1, 1, (5,4), 2)
+    _, sg, _, _, _, _ = run_gpu(BASE, singular, -1, 1, PAIR, 2)
     oks = sg != 0
     print(f"[FIXED PARITY] known pole path flagged: {'PASS' if oks else 'FAIL'} status={sg}")
     failures += 0 if oks else 1

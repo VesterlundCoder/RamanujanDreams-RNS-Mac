@@ -26,7 +26,13 @@ jobs:
           python -m py_compile scripts/test_fixed_start_cpu.py
           python -m py_compile scripts/validate_fixed_start.py
       - name: Exact CPU semantic tests
-        run: python scripts/test_fixed_start_cpu.py
+        run: |
+          python scripts/test_fixed_start_cpu.py
+          python scripts/test_rns_reference.py
+      - name: Portable CPU CMake and CTest
+        run: |
+          cmake -S . -B build-cpu -DBUILD_METAL=OFF
+          ctest --test-dir build-cpu --output-on-failure
 
   macos-build:
     runs-on: macos-14

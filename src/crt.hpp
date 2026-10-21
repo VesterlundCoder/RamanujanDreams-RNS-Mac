@@ -42,8 +42,7 @@ inline BigInt garner(const uint32_t *residues, const std::vector<uint32_t> &p) {
 inline BigInt centered(BigInt x, const std::vector<uint32_t> &p) {
     BigInt M = 1;
     for (auto q : p) M *= q;
-    BigInt half = M >> 1;
-    if (x > half) x -= M;
+    if (2*x >= M) x -= M;
     return x;
 }
 

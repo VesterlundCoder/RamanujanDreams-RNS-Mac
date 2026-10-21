@@ -1,5 +1,7 @@
 # RamanujanDreams-RNS-Mac
 
+
+Current correctness contract, validation and remaining hardware checks: [research readiness](docs/RESEARCH_READINESS.md).
 GPU-accelerated search for new mathematical constants from the 6F5
 continued-fraction matrix field (CMF), built for Apple silicon.
 

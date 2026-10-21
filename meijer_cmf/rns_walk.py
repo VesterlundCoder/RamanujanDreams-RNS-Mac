@@ -9,7 +9,7 @@ Port of the DreamsRNS-Metal-Mac full-matrix RNS pipeline
      polynomial coefficients (a global scalar denominator cancels in every
      projective ratio, hence in c1 = s1/s0 and c2 = s2/s0).
   2. Coefficients are reduced modulo K 31-bit primes (auto-sized from a
-     float64 growth proxy so Garner CRT capacity is guaranteed).
+     conservative integer coefficient bound for signed CRT capacity).
   3. The walk P <- P * M(n), n = 0..N-1, runs entirely in uint32/uint64
      modular arithmetic -- a bit-exact reference of walk_meijer_rns.metal
      (one lane = one (candidate, prime) pair; here lanes are vectorized
@@ -78,102 +78,8 @@ def integer_poly_matrix(tm):
     return [coeffs[i * m:(i + 1) * m] for i in range(m)], m, deg
 
 
-# ------------------------------------------------------------ prime sizing
-def gen_primes(k, below=2**31):
-    """k largest primes below 2^31 (fit uint32; products fit uint64)."""
-    out = []
-    cand = below - 1
-    while len(out) < k:
-        if sp.isprime(cand):
-            out.append(cand)
-        cand -= 2
-    return out
-
-
-def required_primes(coeffs, m, deg, depth, margin=8):
-    """Rigorous CRT capacity bound from the INTEGER coefficient sizes.
-
-    |P_N|_max <= prod_{t=0}^{N-1} m * maxentry(M(t)) with
-    maxentry(M(t)) <= (deg+1) * maxcoeff * max(t,1)^deg, so
-    bits = sum_t [log2 m + log2(deg+1) + bits(maxcoeff) + deg*log2 max(t,1)].
-    Guarantees signed-centered Garner CRT uniqueness (with one sign bit)."""
-    maxcoeff_bits = max(abs(c).bit_length()
-                        for row in coeffs for entry in row for c in entry)
-    per_t_const = math.log2(m) + math.log2(deg + 1) + maxcoeff_bits
-    bits = sum(per_t_const + deg * math.log2(max(t, 1)) for t in range(depth))
-    return max(4, int(bits / 30.0) + margin)
-
-
-# ------------------------------------------------------------ RNS reference walk
-def encode_residues(coeffs, primes):
-    """coeffs[i][j] (Horner ints) -> uint32 residue tensor [K][E][deg1]."""
-    m = len(coeffs)
-    deg1 = len(coeffs[0][0])
-    K = len(primes)
-    out = np.zeros((K, m * m, deg1), dtype=np.uint64)
-    for k, p in enumerate(primes):
-        for i in range(m):
-            for j in range(m):
-                for d, c in enumerate(coeffs[i][j]):
-                    out[k, i * m + j, d] = c % p
-    return out
-
-
-def walk_rns(coeffR, primes, m, depth, checkpoints):
-    """Vectorized-over-primes modular walk.  Bit-exact mirror of the Metal
-    kernel: P <- P * M(t), t = 0..depth-1, snapshot at each checkpoint."""
-    K = len(primes)
-    pv = np.asarray(primes, dtype=np.uint64)
-    P = np.zeros((K, m, m), dtype=np.uint64)
-    P[:, range(m), range(m)] = 1
-    snaps = {}
-    cps = sorted(checkpoints)
-    ci = 0
-    deg1 = coeffR.shape[2]
-    for t in range(depth):
-        tmod = np.uint64(t) % pv                      # [K]
-        val = coeffR[:, :, 0].copy()                  # [K][E]
-        for j in range(1, deg1):
-            val = (val * tmod[:, None] + coeffR[:, :, j]) % pv[:, None]
-        M = val.reshape(K, m, m)
-        newP = np.zeros_like(P)
-        for z in range(m):
-            newP = (newP + P[:, :, z][:, :, None] * M[:, z, :][:, None, :]) \
-                % pv[:, None, None]
-        P = newP
-        while ci < len(cps) and cps[ci] == t + 1:
-            snaps[cps[ci]] = P.copy()
-            ci += 1
-    return snaps
-
-
-# ------------------------------------------------------------ CRT reconstruction
-def garner_crt(residues, primes):
-    """Signed-centered CRT lift of one integer from residues (Python ints)."""
-    x = 0
-    mod = 1
-    for r, p in zip(residues, primes):
-        t = ((int(r) - x) * pow(mod, -1, p)) % p
-        x += t * mod
-        mod *= p
-    if x > mod // 2:
-        x -= mod
-    return x
-
-
-def reconstruct_state(snap, primes, m):
-    """First column of the product matrix as exact integers (s0, s1, ...)."""
-    return [garner_crt([snap[k, i, 0] for k in range(len(primes))], primes)
-            for i in range(m)]
-
-
-def crt_capacity_ok(snap, primes, m):
-    """Reconstruction is trusted only if dropping 2 primes gives the same
-    integers (standard consistency test for unknown magnitudes)."""
-    full = reconstruct_state(snap, primes, m)
-    part = reconstruct_state(snap[:-2], primes[:-2], m)
-    return full == part, full
-
+from rns_reference import (gen_primes, required_primes, encode_residues, walk_rns,
+                           garner_crt, reconstruct_state, crt_capacity_ok)
 
 # ------------------------------------------------------------ driver
 def run_pair(initial, traj, depth, checkpoints, validate, quiet=False):
